@@ -4,82 +4,106 @@ import pandas as pd
 import numpy as np
 import time
 
-st.set_page_config(page_title="Stand Interactivo", layout="wide")
+# Configuración de pantalla completa para el stand
+st.set_page_config(page_title="Live Data Arena", layout="wide", initial_sidebar_state="collapsed")
 
-# Estilo para ocultar menús de Streamlit y centrar el foco en el gráfico
-st.markdown("""<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;}</style>""", unsafe_allow_html=True)
+# CSS para ocultar todo el ruido de Streamlit y que parezca una app nativa
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .reportview-container .main {color: white; background-color: #050505;}
+    </style>
+    """, unsafe_allow_html=True)
 
-# 1. ESTADO DE LA SESIÓN (Simula nuestra base de datos real)
+# 1. INICIALIZACIÓN DE LA BASE DE DATOS EN SESIÓN
 if 'db' not in st.session_state:
-    # Datos iniciales: 5 puntos de referencia
+    # Creamos 15 puntos iniciales
     st.session_state.db = pd.DataFrame({
-        'ID': range(5),
-        'Nombre': [f"Ref {i}" for i in range(5)],
-        'Innovacion': np.random.uniform(1, 5, 5),
-        'Presupuesto': np.random.uniform(1, 5, 5),
-        'Sostenibilidad': np.random.uniform(1, 5, 5),
-        'Frame': [0]*5  # El frame inicial
+        'Nombre': [f"User_{i}" for i in range(15)],
+        'Innovacion': np.random.uniform(1, 5, 15),
+        'Presupuesto': np.random.uniform(1, 5, 15),
+        'Sostenibilidad': np.random.uniform(1, 5, 15)
     })
 
-def get_cluster(row):
-    if row['Innovacion'] > 3.5: return 'Estratégico (A)'
-    if row['Presupuesto'] > 3.5: return 'Operativo (B)'
-    return 'Exploratorio (C)'
+def get_cluster_name(row):
+    if row['Innovacion'] > 3.5: return '🚀 INNOVADORES'
+    if row['Presupuesto'] > 3.5: return '💰 ESTRATÉGICOS'
+    return '🌱 EXPLORADORES'
 
-# 2. BUCLE DE ACTUALIZACIÓN EN VIVO
+# 2. BUCLE DE ANIMACIÓN CONTINUA
 placeholder = st.empty()
 
 while True:
-    # SIMULACIÓN: Llega un nuevo cliente cada ciclo
-    new_id = len(st.session_state.db)
-    new_row = {
-        'ID': new_id,
-        'Nombre': f"Invitado_{new_id}",
-        'Innovacion': np.random.uniform(1, 5),
-        'Presupuesto': np.random.uniform(1, 5),
-        'Sostenibilidad': np.random.uniform(1, 5),
-        'Frame': new_id  # Cada nuevo ID es un nuevo paso en la animación
-    }
+    df = st.session_state.db.copy()
     
-    # Añadimos el nuevo registro a la base de datos local
-    st.session_state.db = pd.concat([st.session_state.db, pd.DataFrame([new_row])], ignore_index=True)
-    st.session_state.db['Categoria'] = st.session_state.db.apply(get_cluster, axis=1)
+    # --- EFECTO "VIVO" (Jitter) ---
+    # Añadimos un pequeño movimiento aleatorio a cada burbuja para que parezca que flotan
+    df['Innovacion'] += np.random.uniform(-0.05, 0.05, len(df))
+    df['Presupuesto'] += np.random.uniform(-0.05, 0.05, len(df))
+    
+    # Asignar categorías y colores
+    df['Categoria'] = df.apply(get_cluster_name, axis=1)
 
-    # 3. CREACIÓN DEL GRÁFICO ANIMADO
-    # 'animation_frame' hace que los puntos se muevan entre estados
+    # --- LÓGICA DE NUEVO INGRESO ---
+    # Simulamos que cada 3 ciclos entra alguien nuevo (Sustituir por lectura de Sheets)
+    if np.random.random() > 0.7:
+        new_row = pd.DataFrame({
+            'Nombre': [f"User_{len(df)}"],
+            'Innovacion': [np.random.uniform(1, 5)],
+            'Presupuesto': [np.random.uniform(1, 5)],
+            'Sostenibilidad': [np.random.uniform(1, 5)]
+        })
+        st.session_state.db = pd.concat([st.session_state.db, new_row], ignore_index=True)
+
+    # 3. CREACIÓN DEL GRÁFICO (Sin animation_frame para que sea fluido)
     fig = px.scatter(
-        st.session_state.db,
+        df,
         x="Innovacion",
         y="Presupuesto",
         size="Sostenibilidad",
         color="Categoria",
-        animation_frame="Frame", # LA CLAVE: Crea la secuencia de movimiento
         hover_name="Nombre",
-        range_x=[0, 6], 
+        text="Nombre",
+        range_x=[0, 6],
         range_y=[0, 6],
-        size_max=50,
+        size_max=45,
         color_discrete_map={
-            "Estratégico (A)": "#00d4ff", 
-            "Operativo (B)": "#ff0070",
-            "Exploratorio (C)": "#ccff00"
+            '🚀 INNOVADORES': '#00f2ff', 
+            '💰 ESTRATÉGICOS': '#7000ff',
+            '🌱 EXPLORADORES': '#bfff00'
         },
         template="plotly_dark"
     )
 
-    # Configuración de la velocidad de la animación
-    fig.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = 800
-    fig.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = 600
-    
-    # Estética del Stand
+    # Ajustes de estilo para máxima visibilidad en monitor
     fig.update_layout(
-        height=800,
-        margin=dict(l=20, r=20, t=20, b=20),
+        height=850,
         showlegend=True,
-        legend=dict(font=dict(size=18), yanchor="top", y=0.99, xanchor="left", x=0.01)
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.02,
+            xanchor="center", x=0.5,
+            font=dict(size=20, color="white")
+        ),
+        margin=dict(l=0, r=0, t=50, b=0),
+        # Quitamos las líneas de cuadrícula para un look más limpio
+        xaxis=dict(showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(showgrid=False, zeroline=False, visible=False),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)'
+    )
+    
+    fig.update_traces(
+        textposition='top center',
+        marker=dict(line=dict(width=2, color='white')), # Borde blanco para resaltar
+        selector=dict(mode='markers+text')
     )
 
+    # Renderizado
     with placeholder.container():
-        st.plotly_chart(fig, use_container_width=True)
-        st.write(f"✨ Total de registros: {len(st.session_state.db)}")
-
-    time.sleep(4) # Tiempo de espera para que la gente vea su burbuja
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    
+    # Control de velocidad: 0.1 para que el movimiento sea vibrante y constante
+    time.sleep(0.1)
