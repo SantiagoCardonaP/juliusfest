@@ -4,94 +4,82 @@ import pandas as pd
 import numpy as np
 import time
 
-# Configuración de la página para que se vea bien en el monitor del stand
-st.set_page_config(page_title="Data Arena - Stand Interactiva", layout="wide")
+st.set_page_config(page_title="Stand Interactivo", layout="wide")
 
-st.title("🚀 Visualización de Clientes en Tiempo Real")
-st.write("Escanea el QR y mira cómo aparece tu burbuja en el cluster correspondiente.")
+# Estilo para ocultar menús de Streamlit y centrar el foco en el gráfico
+st.markdown("""<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
-# 1. FUNCIÓN PARA SIMULAR DATOS (Sustituir luego por tu Google Sheets/API)
-def get_data():
-    # Creamos 20 clientes iniciales con escalas 1-5
-    n_clientes = 20
-    data = {
-        'ID': range(n_clientes),
-        'Nombre': [f"Cliente {i}" for i in range(n_clientes)],
-        'Innovacion': np.random.randint(1, 6, n_clientes),
-        'Presupuesto': np.random.randint(1, 6, n_clientes),
-        'Sostenibilidad': np.random.randint(1, 6, n_clientes),
-    }
-    df = pd.DataFrame(data)
-    
-    # Lógica de Clusterización Simple
-    # Categoría A: Innovadores (Innovacion > 3)
-    # Categoría B: Conservadores (Innovacion <= 3 y Presupuesto > 3)
-    # Categoría C: Eficientes (Resto)
-    def clusterize(row):
-        if row['Innovacion'] > 3: return 'Cluster Innovación'
-        if row['Presupuesto'] > 3: return 'Cluster Estabilidad'
-        return 'Cluster Eficiencia'
-    
-    df['Categoria'] = df.apply(clusterize, axis=1)
-    return df
+# 1. ESTADO DE LA SESIÓN (Simula nuestra base de datos real)
+if 'db' not in st.session_state:
+    # Datos iniciales: 5 puntos de referencia
+    st.session_state.db = pd.DataFrame({
+        'ID': range(5),
+        'Nombre': [f"Ref {i}" for i in range(5)],
+        'Innovacion': np.random.uniform(1, 5, 5),
+        'Presupuesto': np.random.uniform(1, 5, 5),
+        'Sostenibilidad': np.random.uniform(1, 5, 5),
+        'Frame': [0]*5  # El frame inicial
+    })
 
-# 2. INTERFAZ DE STREAMLIT
-df = get_data()
+def get_cluster(row):
+    if row['Innovacion'] > 3.5: return 'Estratégico (A)'
+    if row['Presupuesto'] > 3.5: return 'Operativo (B)'
+    return 'Exploratorio (C)'
 
-# Contenedor para el gráfico (para que se refresque sin parpadear)
+# 2. BUCLE DE ACTUALIZACIÓN EN VIVO
 placeholder = st.empty()
 
-# Bucle de "Tiempo Real" simulado
 while True:
-    # Añadimos un "nuevo cliente" aleatorio cada ciclo para ver la animación
-    nuevo_cliente = pd.DataFrame({
-        'ID': [len(df)],
-        'Nombre': [f"Nuevo {len(df)}"],
-        'Innovacion': [np.random.randint(1, 6)],
-        'Presupuesto': [np.random.randint(1, 6)],
-        'Sostenibilidad': [np.random.randint(1, 6)],
-    })
+    # SIMULACIÓN: Llega un nuevo cliente cada ciclo
+    new_id = len(st.session_state.db)
+    new_row = {
+        'ID': new_id,
+        'Nombre': f"Invitado_{new_id}",
+        'Innovacion': np.random.uniform(1, 5),
+        'Presupuesto': np.random.uniform(1, 5),
+        'Sostenibilidad': np.random.uniform(1, 5),
+        'Frame': new_id  # Cada nuevo ID es un nuevo paso en la animación
+    }
     
-    # Recalculamos categoría para el nuevo
-    def quick_cluster(row):
-        if row['Innovacion'] > 3: return 'Cluster Innovación'
-        if row['Presupuesto'] > 3: return 'Cluster Estabilidad'
-        return 'Cluster Eficiencia'
-    
-    nuevo_cliente['Categoria'] = nuevo_cliente.apply(quick_cluster, axis=1)
-    df = pd.concat([df, nuevo_cliente], ignore_index=True)
+    # Añadimos el nuevo registro a la base de datos local
+    st.session_state.db = pd.concat([st.session_state.db, pd.DataFrame([new_row])], ignore_index=True)
+    st.session_state.db['Categoria'] = st.session_state.db.apply(get_cluster, axis=1)
 
-    # 3. CREACIÓN DEL GRÁFICO DE BURBUJAS CON PLOTLY
+    # 3. CREACIÓN DEL GRÁFICO ANIMADO
+    # 'animation_frame' hace que los puntos se muevan entre estados
     fig = px.scatter(
-        df,
+        st.session_state.db,
         x="Innovacion",
         y="Presupuesto",
-        size="Sostenibilidad", # El tamaño depende del tercer campo
+        size="Sostenibilidad",
         color="Categoria",
+        animation_frame="Frame", # LA CLAVE: Crea la secuencia de movimiento
         hover_name="Nombre",
-        text="Nombre",
-        size_max=40,
-        range_x=[0.5, 5.5], # Escala 1-5 fija
-        range_y=[0.5, 5.5],
+        range_x=[0, 6], 
+        range_y=[0, 6],
+        size_max=50,
         color_discrete_map={
-            "Cluster Innovación": "#00FFCC", # Colores neón para el stand
-            "Cluster Estabilidad": "#FF007F",
-            "Cluster Eficiencia": "#FFFF00"
+            "Estratégico (A)": "#00d4ff", 
+            "Operativo (B)": "#ff0070",
+            "Exploratorio (C)": "#ccff00"
         },
-        template="plotly_dark" # Fondo oscuro para que resalte en el monitor
+        template="plotly_dark"
     )
 
-    # Ajustes estéticos para que se vea "limpio" en pantalla grande
+    # Configuración de la velocidad de la animación
+    fig.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = 800
+    fig.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = 600
+    
+    # Estética del Stand
     fig.update_layout(
-        height=700,
+        height=800,
+        margin=dict(l=20, r=20, t=20, b=20),
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(font=dict(size=18), yanchor="top", y=0.99, xanchor="left", x=0.01)
     )
-    fig.update_traces(textposition='top center')
 
-    # Renderizar en el placeholder
     with placeholder.container():
         st.plotly_chart(fig, use_container_width=True)
-    
-    # Espera de 3 segundos antes de buscar nuevos datos
-    time.sleep(3)
+        st.write(f"✨ Total de registros: {len(st.session_state.db)}")
+
+    time.sleep(4) # Tiempo de espera para que la gente vea su burbuja
