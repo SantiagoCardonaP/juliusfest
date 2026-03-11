@@ -13,13 +13,19 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# -----------------------------
+# =========================================================
 # CONFIG
-# -----------------------------
+# =========================================================
 SHEET_ID = "1v2_7wlNnPA0jxg0ZBRcSLlMbtfxAh04RcvdmyVyvi8s"
-SHEET_GID = "0"  # cambia esto si tu pestaña real no es la primera
+SHEET_NAME = "Hoja 1"   # cambia esto si tu pestaña tiene otro nombre
 MAX_BUBBLES = 20
 
+COMPANY_COL = "¿Cuál es el nombre de tu empresa?"
+SUM_COL = "Suma"
+
+# =========================================================
+# ESTILO STREAMLIT
+# =========================================================
 st.markdown("""
 <style>
 .stApp {
@@ -29,122 +35,152 @@ st.markdown("""
         radial-gradient(circle at 50% 85%, rgba(191,255,0,0.08), transparent 25%),
         linear-gradient(180deg, #030303 0%, #080808 100%);
 }
+
 .block-container {
     padding-top: 1rem;
     max-width: 100%;
 }
+
+h1, p, label, div {
+    color: white;
+}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Burbujas 3D · Google Sheets + Three.js")
-st.caption("Empresas desde Google Sheets, color por Suma, nombre dentro de la burbuja")
+st.title("Burbujas 3D · Empresas en tiempo real")
+st.caption("Google Sheets + Streamlit + Three.js")
 
-# -----------------------------
-# CARGA DEL SHEET
-# -----------------------------
+# =========================================================
+# GOOGLE SHEETS
+# =========================================================
 @st.cache_data(ttl=15)
-def load_sheet(sheet_id: str, gid: str) -> pd.DataFrame:
-    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    df = pd.read_csv(csv_url)
-    return df
+def load_sheet(sheet_id: str, sheet_name: str) -> pd.DataFrame:
+    encoded_name = urllib.parse.quote(sheet_name)
 
-def color_from_suma(value: float) -> str:
-    # Ajusta los rangos a tu gusto
-    if value >= 13:
-        return "#00f2ff"   # alto
-    if value >= 9:
-        return "#7000ff"   # medio
-    return "#bfff00"       # base
+    urls = [
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}",
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&sheet={encoded_name}",
+    ]
+
+    last_error = None
+    for url in urls:
+        try:
+            return pd.read_csv(url)
+        except Exception as e:
+            last_error = e
+
+    raise last_error
 
 def safe_text(value) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
 
+def color_from_suma(value: float, vmin: float, vmax: float) -> str:
+    if math.isclose(vmin, vmax):
+        return "#00f2ff"
+
+    norm = (value - vmin) / (vmax - vmin)
+
+    if norm >= 0.66:
+        return "#00f2ff"   # alto
+    elif norm >= 0.33:
+        return "#7000ff"   # medio
+    return "#bfff00"       # bajo
+
+def size_from_suma(value: float, vmin: float, vmax: float) -> float:
+    if math.isclose(vmin, vmax):
+        return 0.95
+    norm = (value - vmin) / (vmax - vmin)
+    return 0.60 + norm * 0.95
+
+# =========================================================
+# CARGA Y LIMPIEZA
+# =========================================================
 try:
-    df = load_sheet(SHEET_ID, SHEET_GID)
+    df = load_sheet(SHEET_ID, SHEET_NAME)
 except Exception as e:
     st.error(f"No pude leer Google Sheets: {e}")
     st.stop()
 
-required_cols = ["¿Cuál es el nombre de tu empresa?", "Suma"]
+required_cols = [COMPANY_COL, SUM_COL]
 missing = [c for c in required_cols if c not in df.columns]
+
 if missing:
     st.error(f"Faltan columnas requeridas: {missing}")
     st.write("Columnas encontradas:", list(df.columns))
     st.stop()
 
-# Limpieza mínima
 df = df.copy()
-df["¿Cuál es el nombre de tu empresa?"] = df["¿Cuál es el nombre de tu empresa?"].apply(safe_text)
-df["Suma"] = pd.to_numeric(df["Suma"], errors="coerce")
-df = df.dropna(subset=["Suma"])
-df = df[df["¿Cuál es el nombre de tu empresa?"] != ""]
+df[COMPANY_COL] = df[COMPANY_COL].apply(safe_text)
+df[SUM_COL] = pd.to_numeric(df[SUM_COL], errors="coerce")
+
+df = df.dropna(subset=[SUM_COL])
+df = df[df[COMPANY_COL] != ""]
 df = df.tail(MAX_BUBBLES).reset_index(drop=True)
 
 if df.empty:
     st.warning("No hay filas válidas para mostrar.")
     st.stop()
 
-# -----------------------------
+# =========================================================
 # CONTROLES
-# -----------------------------
-col1, col2, col3 = st.columns(3)
+# =========================================================
+col1, col2, col3, col4 = st.columns(4)
+
 with col1:
-    auto_rotate = st.toggle("Auto rotación", value=True)
-with col2:
     speed = st.slider("Velocidad", 0.2, 2.0, 0.9, 0.1)
-with col3:
+
+with col2:
     spread = st.slider("Separación", 6, 18, 10)
+
+with col3:
+    auto_rotate = st.toggle("Auto rotación", value=True)
+
+with col4:
+    show_debug = st.toggle("Mostrar debug", value=False)
 
 st.metric("Empresas visibles", len(df))
 
-# -----------------------------
-# MAPEO A BURBUJAS
-# -----------------------------
-# Distribución en anillo/espiral para evitar superposición excesiva
+# =========================================================
+# MAPEO DE DATOS A BURBUJAS
+# =========================================================
+vmin = float(df[SUM_COL].min())
+vmax = float(df[SUM_COL].max())
+
 bubbles = []
 n = len(df)
 
-# Escala de tamaño basada en Suma
-suma_min = float(df["Suma"].min())
-suma_max = float(df["Suma"].max())
-
-def size_from_suma(v: float) -> float:
-    if math.isclose(suma_min, suma_max):
-        return 0.9
-    norm = (v - suma_min) / (suma_max - suma_min)
-    return 0.55 + norm * 0.85
-
 for i, row in df.iterrows():
     angle = (i / max(n, 1)) * math.pi * 2.0
-    ring = 3.2 + (i % 4) * (spread / 10.0)
-    x = math.cos(angle) * ring
-    y = math.sin(angle * 1.4) * 2.2
-    z = math.sin(angle) * ring * 0.75
+    layer = i % 4
+    radius_ring = 3.0 + layer * (spread / 10.0)
 
-    empresa = safe_text(row["¿Cuál es el nombre de tu empresa?"])
-    suma = float(row["Suma"])
-    radius = size_from_suma(suma)
-    color = color_from_suma(suma)
+    x = math.cos(angle) * radius_ring
+    y = math.sin(angle * 1.35) * 2.4
+    z = math.sin(angle) * radius_ring * 0.85
+
+    company = safe_text(row[COMPANY_COL])
+    suma = float(row[SUM_COL])
 
     bubbles.append({
-        "name": empresa,
-        "suma": suma,
+        "name": company,
+        "suma": round(suma, 2),
         "x": round(x, 3),
         "y": round(y, 3),
         "z": round(z, 3),
-        "r": round(radius, 3),
-        "color": color,
-        "phase": round(random.uniform(0, 6.28), 3),
+        "r": round(size_from_suma(suma, vmin, vmax), 3),
+        "color": color_from_suma(suma, vmin, vmax),
+        "phase": round(random.uniform(0, 6.28), 3)
     })
 
-bubbles_json = json.dumps(bubbles)
+bubbles_json = json.dumps(bubbles, ensure_ascii=False)
 auto_rotate_js = "true" if auto_rotate else "false"
+debug_display = "block" if show_debug else "none"
 
-# -----------------------------
-# ESCENA THREE.JS
-# -----------------------------
+# =========================================================
+# HTML + THREE.JS
+# =========================================================
 html_code = f"""
 <!DOCTYPE html>
 <html>
@@ -163,7 +199,7 @@ html_code = f"""
 
     #scene-container {{
       width: 100%;
-      height: 720px;
+      height: 740px;
       position: relative;
       overflow: hidden;
       border-radius: 24px;
@@ -194,6 +230,7 @@ html_code = f"""
       background: rgba(0,0,0,0.35);
       padding: 6px 10px;
       border-radius: 10px;
+      display: {debug_display};
     }}
 
     #tooltip {{
@@ -202,7 +239,7 @@ html_code = f"""
       display: none;
       padding: 8px 10px;
       border-radius: 10px;
-      background: rgba(10,10,10,0.90);
+      background: rgba(10,10,10,0.92);
       color: white;
       font-size: 13px;
       line-height: 1.35;
@@ -260,7 +297,7 @@ html_code = f"""
       controls.minDistance = 7;
       controls.maxDistance = 28;
 
-      const ambient = new THREE.AmbientLight(0xffffff, 0.85);
+      const ambient = new THREE.AmbientLight(0xffffff, 0.90);
       scene.add(ambient);
 
       const point1 = new THREE.PointLight(0x00f2ff, 1.8, 40);
@@ -316,16 +353,17 @@ html_code = f"""
 
         ctx.clearRect(0, 0, size, size);
 
-        // texto centrado en varias líneas
         const maxWidth = 360;
         const words = String(message).split(" ");
         const lines = [];
         let line = "";
 
         ctx.font = "bold 38px Arial";
+
         for (let i = 0; i < words.length; i++) {{
           const testLine = line ? line + " " + words[i] : words[i];
           const metrics = ctx.measureText(testLine);
+
           if (metrics.width > maxWidth && line) {{
             lines.push(line);
             line = words[i];
@@ -333,10 +371,12 @@ html_code = f"""
             line = testLine;
           }}
         }}
+
         if (line) lines.push(line);
 
         const maxLines = 3;
         const clippedLines = lines.slice(0, maxLines);
+
         if (lines.length > maxLines) {{
           clippedLines[maxLines - 1] = clippedLines[maxLines - 1].slice(0, 14) + "...";
         }}
@@ -376,7 +416,6 @@ html_code = f"""
       bubbles.forEach((b) => {{
         const group = new THREE.Group();
 
-        // Halo
         const glowGeometry = new THREE.SphereGeometry(b.r * 1.55, 36, 36);
         const glowMaterial = new THREE.MeshBasicMaterial({{
           color: b.color,
@@ -386,7 +425,6 @@ html_code = f"""
         const glow = new THREE.Mesh(glowGeometry, glowMaterial);
         group.add(glow);
 
-        // Burbuja principal
         const sphereGeometry = new THREE.SphereGeometry(b.r, 48, 48);
         const sphereMaterial = new THREE.MeshPhongMaterial({{
           color: b.color,
@@ -398,7 +436,6 @@ html_code = f"""
         const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
         group.add(sphere);
 
-        // Texto al centro de la burbuja
         const label = makeTextSprite(b.name, b.r);
         label.position.set(0, 0, b.r * 1.02);
         group.add(label);
@@ -432,6 +469,7 @@ html_code = f"""
         if (intersects.length > 0) {{
           const mesh = intersects[0].object;
           const found = bubbleMeshes.find(item => item.sphere === mesh);
+
           if (found) {{
             tooltip.style.display = "block";
             tooltip.style.left = (event.clientX - rect.left + 14) + "px";
@@ -457,6 +495,7 @@ html_code = f"""
           b.group.position.z = b.baseZ + Math.sin(t * 0.5 + b.phase + i * 0.23) * 0.45;
 
           b.group.rotation.y += 0.0022;
+
           const pulse = 1 + Math.sin(t * 1.35 + b.phase) * 0.03;
           b.group.scale.set(pulse, pulse, pulse);
         }});
@@ -490,4 +529,4 @@ html_code = f"""
 </html>
 """
 
-components.html(html_code, height=740, scrolling=False)
+components.html(html_code, height=760, scrolling=False)
