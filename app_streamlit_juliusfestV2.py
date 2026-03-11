@@ -354,4 +354,4 @@ while True:
     )
 
     # Suave y estable
-    time.sleep(0.09)
+    time.sleep(0.18)
