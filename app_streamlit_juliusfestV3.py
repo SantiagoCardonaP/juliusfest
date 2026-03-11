@@ -1,13 +1,24 @@
 import json
+import math
 import random
+import urllib.parse
+
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(
-    page_title="Burbujas 3D · Streamlit + Three.js",
+    page_title="Burbujas 3D · Google Sheets + Three.js",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+SHEET_ID = "1v2_7wlNnPA0jxg0ZBRcSLlMbtfxAh04RcvdmyVyvi8s"
+SHEET_GID = "0"  # cambia esto si tu pestaña real no es la primera
+MAX_BUBBLES = 20
 
 st.markdown("""
 <style>
@@ -25,29 +36,115 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Burbujas 3D · Streamlit + Three.js")
-st.caption("Plantilla mínima funcional con animación fluida en frontend")
+st.title("Burbujas 3D · Google Sheets + Three.js")
+st.caption("Empresas desde Google Sheets, color por Suma, nombre dentro de la burbuja")
 
-n_bubbles = st.slider("Número de burbujas", 5, 20, 10)
-bubble_scale = st.slider("Escala de burbujas", 0.3, 2.0, 0.9, 0.1)
-speed = st.slider("Velocidad", 0.1, 2.0, 1.0, 0.1)
+# -----------------------------
+# CARGA DEL SHEET
+# -----------------------------
+@st.cache_data(ttl=15)
+def load_sheet(sheet_id: str, gid: str) -> pd.DataFrame:
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    df = pd.read_csv(csv_url)
+    return df
 
-palette = ["#00f2ff", "#7000ff", "#bfff00"]
+def color_from_suma(value: float) -> str:
+    # Ajusta los rangos a tu gusto
+    if value >= 13:
+        return "#00f2ff"   # alto
+    if value >= 9:
+        return "#7000ff"   # medio
+    return "#bfff00"       # base
 
+def safe_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+try:
+    df = load_sheet(SHEET_ID, SHEET_GID)
+except Exception as e:
+    st.error(f"No pude leer Google Sheets: {e}")
+    st.stop()
+
+required_cols = ["¿Cuál es el nombre de tu empresa?", "Suma"]
+missing = [c for c in required_cols if c not in df.columns]
+if missing:
+    st.error(f"Faltan columnas requeridas: {missing}")
+    st.write("Columnas encontradas:", list(df.columns))
+    st.stop()
+
+# Limpieza mínima
+df = df.copy()
+df["¿Cuál es el nombre de tu empresa?"] = df["¿Cuál es el nombre de tu empresa?"].apply(safe_text)
+df["Suma"] = pd.to_numeric(df["Suma"], errors="coerce")
+df = df.dropna(subset=["Suma"])
+df = df[df["¿Cuál es el nombre de tu empresa?"] != ""]
+df = df.tail(MAX_BUBBLES).reset_index(drop=True)
+
+if df.empty:
+    st.warning("No hay filas válidas para mostrar.")
+    st.stop()
+
+# -----------------------------
+# CONTROLES
+# -----------------------------
+col1, col2, col3 = st.columns(3)
+with col1:
+    auto_rotate = st.toggle("Auto rotación", value=True)
+with col2:
+    speed = st.slider("Velocidad", 0.2, 2.0, 0.9, 0.1)
+with col3:
+    spread = st.slider("Separación", 6, 18, 10)
+
+st.metric("Empresas visibles", len(df))
+
+# -----------------------------
+# MAPEO A BURBUJAS
+# -----------------------------
+# Distribución en anillo/espiral para evitar superposición excesiva
 bubbles = []
-for i in range(n_bubbles):
+n = len(df)
+
+# Escala de tamaño basada en Suma
+suma_min = float(df["Suma"].min())
+suma_max = float(df["Suma"].max())
+
+def size_from_suma(v: float) -> float:
+    if math.isclose(suma_min, suma_max):
+        return 0.9
+    norm = (v - suma_min) / (suma_max - suma_min)
+    return 0.55 + norm * 0.85
+
+for i, row in df.iterrows():
+    angle = (i / max(n, 1)) * math.pi * 2.0
+    ring = 3.2 + (i % 4) * (spread / 10.0)
+    x = math.cos(angle) * ring
+    y = math.sin(angle * 1.4) * 2.2
+    z = math.sin(angle) * ring * 0.75
+
+    empresa = safe_text(row["¿Cuál es el nombre de tu empresa?"])
+    suma = float(row["Suma"])
+    radius = size_from_suma(suma)
+    color = color_from_suma(suma)
+
     bubbles.append({
-        "name": f"Bubble_{i+1}",
-        "x": random.uniform(-6, 6),
-        "y": random.uniform(-3, 3),
-        "z": random.uniform(-4, 4),
-        "r": random.uniform(0.35, 0.9) * bubble_scale,
-        "color": random.choice(palette),
-        "phase": random.uniform(0, 6.28),
+        "name": empresa,
+        "suma": suma,
+        "x": round(x, 3),
+        "y": round(y, 3),
+        "z": round(z, 3),
+        "r": round(radius, 3),
+        "color": color,
+        "phase": round(random.uniform(0, 6.28), 3),
     })
 
 bubbles_json = json.dumps(bubbles)
+auto_rotate_js = "true" if auto_rotate else "false"
 
+# -----------------------------
+# ESCENA THREE.JS
+# -----------------------------
 html_code = f"""
 <!DOCTYPE html>
 <html>
@@ -61,14 +158,15 @@ html_code = f"""
       height: 100%;
       overflow: hidden;
       background: transparent;
+      font-family: Arial, sans-serif;
     }}
 
     #scene-container {{
       width: 100%;
-      height: 650px;
+      height: 720px;
       position: relative;
       overflow: hidden;
-      border-radius: 22px;
+      border-radius: 24px;
       background:
         radial-gradient(circle at 20% 20%, rgba(0,242,255,0.08), transparent 25%),
         radial-gradient(circle at 80% 15%, rgba(112,0,255,0.08), transparent 25%),
@@ -81,8 +179,7 @@ html_code = f"""
       left: 18px;
       bottom: 14px;
       z-index: 10;
-      color: rgba(255,255,255,0.75);
-      font-family: Arial, sans-serif;
+      color: rgba(255,255,255,0.78);
       font-size: 14px;
       pointer-events: none;
     }}
@@ -92,12 +189,26 @@ html_code = f"""
       right: 18px;
       top: 14px;
       z-index: 10;
-      color: rgba(255,255,255,0.75);
-      font-family: Arial, sans-serif;
+      color: rgba(255,255,255,0.78);
       font-size: 13px;
       background: rgba(0,0,0,0.35);
       padding: 6px 10px;
       border-radius: 10px;
+    }}
+
+    #tooltip {{
+      position: absolute;
+      z-index: 20;
+      display: none;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(10,10,10,0.90);
+      color: white;
+      font-size: 13px;
+      line-height: 1.35;
+      pointer-events: none;
+      border: 1px solid rgba(255,255,255,0.12);
+      white-space: nowrap;
     }}
   </style>
 </head>
@@ -105,6 +216,7 @@ html_code = f"""
   <div id="scene-container">
     <div id="hint">Drag para rotar · Scroll para zoom</div>
     <div id="debug">Cargando escena…</div>
+    <div id="tooltip"></div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -112,15 +224,17 @@ html_code = f"""
 
   <script>
     const debugBox = document.getElementById("debug");
+    const tooltip = document.getElementById("tooltip");
 
     try {{
       const bubbles = {bubbles_json};
       const SPEED = {speed};
+      const AUTO_ROTATE = {auto_rotate_js};
 
       const container = document.getElementById("scene-container");
 
       const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x050505, 0.045);
+      scene.fog = new THREE.FogExp2(0x050505, 0.04);
 
       const camera = new THREE.PerspectiveCamera(
         55,
@@ -128,7 +242,7 @@ html_code = f"""
         0.1,
         100
       );
-      camera.position.set(0, 1.5, 14);
+      camera.position.set(0, 1.8, 15);
 
       const renderer = new THREE.WebGLRenderer({{
         antialias: true,
@@ -141,46 +255,43 @@ html_code = f"""
       const controls = new THREE.OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
       controls.dampingFactor = 0.05;
-      controls.autoRotate = true;
-      controls.autoRotateSpeed = 0.5;
+      controls.autoRotate = AUTO_ROTATE;
+      controls.autoRotateSpeed = 0.45;
       controls.minDistance = 7;
-      controls.maxDistance = 24;
+      controls.maxDistance = 28;
 
-      const ambient = new THREE.AmbientLight(0xffffff, 0.75);
+      const ambient = new THREE.AmbientLight(0xffffff, 0.85);
       scene.add(ambient);
 
-      const point1 = new THREE.PointLight(0x00f2ff, 1.7, 40);
-      point1.position.set(-8, 6, 8);
+      const point1 = new THREE.PointLight(0x00f2ff, 1.8, 40);
+      point1.position.set(-8, 7, 8);
       scene.add(point1);
 
       const point2 = new THREE.PointLight(0x7000ff, 1.5, 40);
-      point2.position.set(8, 4, 6);
+      point2.position.set(9, 4, 6);
       scene.add(point2);
 
-      const point3 = new THREE.PointLight(0xbfff00, 1.0, 30);
-      point3.position.set(0, -4, 8);
+      const point3 = new THREE.PointLight(0xbfff00, 1.1, 30);
+      point3.position.set(0, -5, 8);
       scene.add(point3);
 
-      // Fondo de partículas
+      // Partículas de fondo
       const starGeometry = new THREE.BufferGeometry();
-      const starCount = 250;
+      const starCount = 240;
       const starPositions = new Float32Array(starCount * 3);
 
       for (let i = 0; i < starCount; i++) {{
-        starPositions[i * 3] = (Math.random() - 0.5) * 40;
-        starPositions[i * 3 + 1] = (Math.random() - 0.5) * 24;
+        starPositions[i * 3] = (Math.random() - 0.5) * 42;
+        starPositions[i * 3 + 1] = (Math.random() - 0.5) * 26;
         starPositions[i * 3 + 2] = (Math.random() - 0.5) * 30;
       }}
 
-      starGeometry.setAttribute(
-        "position",
-        new THREE.BufferAttribute(starPositions, 3)
-      );
+      starGeometry.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
 
       const starMaterial = new THREE.PointsMaterial({{
         size: 0.06,
         transparent: true,
-        opacity: 0.75,
+        opacity: 0.72,
         color: 0xffffff
       }});
 
@@ -190,13 +301,83 @@ html_code = f"""
       const bubbleGroup = new THREE.Group();
       scene.add(bubbleGroup);
 
+      const raycaster = new THREE.Raycaster();
+      const mouse = new THREE.Vector2();
+
       const bubbleMeshes = [];
+      const hoverTargets = [];
+
+      function makeTextSprite(message, radius) {{
+        const canvas = document.createElement("canvas");
+        const size = 512;
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        ctx.clearRect(0, 0, size, size);
+
+        // texto centrado en varias líneas
+        const maxWidth = 360;
+        const words = String(message).split(" ");
+        const lines = [];
+        let line = "";
+
+        ctx.font = "bold 38px Arial";
+        for (let i = 0; i < words.length; i++) {{
+          const testLine = line ? line + " " + words[i] : words[i];
+          const metrics = ctx.measureText(testLine);
+          if (metrics.width > maxWidth && line) {{
+            lines.push(line);
+            line = words[i];
+          }} else {{
+            line = testLine;
+          }}
+        }}
+        if (line) lines.push(line);
+
+        const maxLines = 3;
+        const clippedLines = lines.slice(0, maxLines);
+        if (lines.length > maxLines) {{
+          clippedLines[maxLines - 1] = clippedLines[maxLines - 1].slice(0, 14) + "...";
+        }}
+
+        const lineHeight = 48;
+        const totalHeight = clippedLines.length * lineHeight;
+        const startY = size / 2 - totalHeight / 2 + 12;
+
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(255,255,255,0.96)";
+        ctx.strokeStyle = "rgba(0,0,0,0.35)";
+        ctx.lineWidth = 8;
+        ctx.font = "bold 38px Arial";
+
+        clippedLines.forEach((txt, idx) => {{
+          const y = startY + idx * lineHeight;
+          ctx.strokeText(txt, size / 2, y);
+          ctx.fillText(txt, size / 2, y);
+        }});
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+
+        const material = new THREE.SpriteMaterial({{
+          map: texture,
+          transparent: true,
+          depthWrite: false
+        }});
+
+        const sprite = new THREE.Sprite(material);
+        const scale = Math.max(1.8, radius * 2.2);
+        sprite.scale.set(scale * 1.65, scale * 1.65, 1);
+        return sprite;
+      }}
 
       bubbles.forEach((b) => {{
         const group = new THREE.Group();
 
         // Halo
-        const glowGeometry = new THREE.SphereGeometry(b.r * 1.55, 32, 32);
+        const glowGeometry = new THREE.SphereGeometry(b.r * 1.55, 36, 36);
         const glowMaterial = new THREE.MeshBasicMaterial({{
           color: b.color,
           transparent: true,
@@ -206,16 +387,21 @@ html_code = f"""
         group.add(glow);
 
         // Burbuja principal
-        const sphereGeometry = new THREE.SphereGeometry(b.r, 40, 40);
+        const sphereGeometry = new THREE.SphereGeometry(b.r, 48, 48);
         const sphereMaterial = new THREE.MeshPhongMaterial({{
           color: b.color,
           transparent: true,
-          opacity: 0.92,
-          shininess: 110,
+          opacity: 0.90,
+          shininess: 120,
           specular: 0xffffff
         }});
         const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
         group.add(sphere);
+
+        // Texto al centro de la burbuja
+        const label = makeTextSprite(b.name, b.r);
+        label.position.set(0, 0, b.r * 1.02);
+        group.add(label);
 
         group.position.set(b.x, b.y, b.z);
         bubbleGroup.add(group);
@@ -225,28 +411,57 @@ html_code = f"""
           baseX: b.x,
           baseY: b.y,
           baseZ: b.z,
-          phase: b.phase
+          phase: b.phase,
+          meta: b,
+          sphere: sphere
         }});
+
+        hoverTargets.push(sphere);
       }});
 
       const clock = new THREE.Clock();
+
+      function updateTooltip(event) {{
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(hoverTargets);
+
+        if (intersects.length > 0) {{
+          const mesh = intersects[0].object;
+          const found = bubbleMeshes.find(item => item.sphere === mesh);
+          if (found) {{
+            tooltip.style.display = "block";
+            tooltip.style.left = (event.clientX - rect.left + 14) + "px";
+            tooltip.style.top = (event.clientY - rect.top + 14) + "px";
+            tooltip.innerHTML = "<b>" + found.meta.name + "</b><br>Suma: " + found.meta.suma;
+          }}
+        }} else {{
+          tooltip.style.display = "none";
+        }}
+      }}
+
+      renderer.domElement.addEventListener("mousemove", updateTooltip);
+      renderer.domElement.addEventListener("mouseleave", () => {{
+        tooltip.style.display = "none";
+      }});
 
       function animate() {{
         const t = clock.getElapsedTime() * SPEED;
 
         bubbleMeshes.forEach((b, i) => {{
           b.group.position.x = b.baseX + Math.sin(t * 0.7 + b.phase + i * 0.17) * 0.35;
-          b.group.position.y = b.baseY + Math.cos(t * 0.9 + b.phase + i * 0.11) * 0.28;
+          b.group.position.y = b.baseY + Math.cos(t * 0.9 + b.phase + i * 0.11) * 0.26;
           b.group.position.z = b.baseZ + Math.sin(t * 0.5 + b.phase + i * 0.23) * 0.45;
 
-          b.group.rotation.y += 0.003;
-          b.group.rotation.x += 0.0015;
-
-          const pulse = 1 + Math.sin(t * 1.4 + b.phase) * 0.035;
+          b.group.rotation.y += 0.0022;
+          const pulse = 1 + Math.sin(t * 1.35 + b.phase) * 0.03;
           b.group.scale.set(pulse, pulse, pulse);
         }});
 
-        stars.rotation.y += 0.0008;
+        stars.rotation.y += 0.0007;
 
         controls.update();
         renderer.render(scene, camera);
@@ -263,11 +478,11 @@ html_code = f"""
 
       window.addEventListener("resize", onResize);
 
-      debugBox.textContent = "Escena 3D activa";
+      debugBox.textContent = "Escena 3D activa · " + bubbles.length + " empresas";
       animate();
 
     }} catch (err) {{
-      debugBox.textContent = "Error cargando Three.js";
+      debugBox.textContent = "Error cargando escena";
       console.error(err);
     }}
   </script>
@@ -275,4 +490,4 @@ html_code = f"""
 </html>
 """
 
-components.html(html_code, height=680, scrolling=False)
+components.html(html_code, height=740, scrolling=False)
