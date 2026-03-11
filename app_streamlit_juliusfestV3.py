@@ -7,6 +7,11 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
+
 st.set_page_config(
     page_title="Burbujas 3D · Google Sheets + Three.js",
     layout="wide",
@@ -17,11 +22,25 @@ st.set_page_config(
 # CONFIG
 # =========================================================
 SHEET_ID = "1v2_7wlNnPA0jxg0ZBRcSLlMbtfxAh04RcvdmyVyvi8s"
-SHEET_NAME = "Hoja 1"   # cambia esto si tu pestaña tiene otro nombre
+SHEET_NAME = "Hoja 1"
 MAX_BUBBLES = 20
 
 COMPANY_COL = "¿Cuál es el nombre de tu empresa?"
 SUM_COL = "Suma"
+
+CACHE_TTL_SECONDS = 5
+AUTOREFRESH_MS = 5000
+
+# =========================================================
+# AUTOREFRESH
+# =========================================================
+if st_autorefresh is not None:
+    st_autorefresh(interval=AUTOREFRESH_MS, key="bubble_refresh")
+else:
+    st.warning(
+        "No está instalado streamlit-autorefresh. Instálalo con: "
+        "`pip install streamlit-autorefresh`"
+    )
 
 # =========================================================
 # ESTILO STREAMLIT
@@ -41,19 +60,19 @@ st.markdown("""
     max-width: 100%;
 }
 
-h1, p, label, div {
+h1, h2, h3, p, div, label {
     color: white;
 }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("Burbujas 3D · Empresas en tiempo real")
-st.caption("Google Sheets + Streamlit + Three.js")
+st.caption("Google Sheets + Streamlit + Three.js · Auto refresh + nombres legibles")
 
 # =========================================================
 # GOOGLE SHEETS
 # =========================================================
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
 def load_sheet(sheet_id: str, sheet_name: str) -> pd.DataFrame:
     encoded_name = urllib.parse.quote(sheet_name)
 
@@ -84,7 +103,7 @@ def color_from_suma(value: float, vmin: float, vmax: float) -> str:
 
     if norm >= 0.66:
         return "#00f2ff"   # alto
-    elif norm >= 0.33:
+    if norm >= 0.33:
         return "#7000ff"   # medio
     return "#bfff00"       # bajo
 
@@ -224,7 +243,7 @@ html_code = f"""
       position: absolute;
       right: 18px;
       top: 14px;
-      z-index: 10;
+      z-index: 20;
       color: rgba(255,255,255,0.78);
       font-size: 13px;
       background: rgba(0,0,0,0.35);
@@ -235,7 +254,7 @@ html_code = f"""
 
     #tooltip {{
       position: absolute;
-      z-index: 20;
+      z-index: 30;
       display: none;
       padding: 8px 10px;
       border-radius: 10px;
@@ -247,6 +266,31 @@ html_code = f"""
       border: 1px solid rgba(255,255,255,0.12);
       white-space: nowrap;
     }}
+
+    #labels-layer {{
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 25;
+    }}
+
+    .bubble-label {{
+      position: absolute;
+      transform: translate(-50%, -50%);
+      color: rgba(255,255,255,0.97);
+      font-size: 13px;
+      font-weight: 700;
+      text-align: center;
+      line-height: 1.1;
+      white-space: normal;
+      max-width: 130px;
+      text-shadow:
+        0 0 6px rgba(0,0,0,0.70),
+        0 0 12px rgba(0,0,0,0.55),
+        0 0 18px rgba(0,0,0,0.40);
+      opacity: 1;
+      will-change: transform, left, top;
+    }}
   </style>
 </head>
 <body>
@@ -254,6 +298,7 @@ html_code = f"""
     <div id="hint">Drag para rotar · Scroll para zoom</div>
     <div id="debug">Cargando escena…</div>
     <div id="tooltip"></div>
+    <div id="labels-layer"></div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -262,6 +307,7 @@ html_code = f"""
   <script>
     const debugBox = document.getElementById("debug");
     const tooltip = document.getElementById("tooltip");
+    const labelsLayer = document.getElementById("labels-layer");
 
     try {{
       const bubbles = {bubbles_json};
@@ -312,7 +358,7 @@ html_code = f"""
       point3.position.set(0, -5, 8);
       scene.add(point3);
 
-      // Partículas de fondo
+      // Partículas
       const starGeometry = new THREE.BufferGeometry();
       const starCount = 240;
       const starPositions = new Float32Array(starCount * 3);
@@ -344,73 +390,29 @@ html_code = f"""
       const bubbleMeshes = [];
       const hoverTargets = [];
 
-      function makeTextSprite(message, radius) {{
-        const canvas = document.createElement("canvas");
-        const size = 512;
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext("2d");
-
-        ctx.clearRect(0, 0, size, size);
-
-        const maxWidth = 360;
-        const words = String(message).split(" ");
+      function wrapLabelText(text, maxLength) {{
+        const words = String(text).split(" ");
         const lines = [];
-        let line = "";
+        let current = "";
 
-        ctx.font = "bold 38px Arial";
-
-        for (let i = 0; i < words.length; i++) {{
-          const testLine = line ? line + " " + words[i] : words[i];
-          const metrics = ctx.measureText(testLine);
-
-          if (metrics.width > maxWidth && line) {{
-            lines.push(line);
-            line = words[i];
+        for (const word of words) {{
+          const candidate = current ? current + " " + word : word;
+          if (candidate.length > maxLength && current) {{
+            lines.push(current);
+            current = word;
           }} else {{
-            line = testLine;
+            current = candidate;
           }}
         }}
 
-        if (line) lines.push(line);
+        if (current) lines.push(current);
 
-        const maxLines = 3;
-        const clippedLines = lines.slice(0, maxLines);
-
-        if (lines.length > maxLines) {{
-          clippedLines[maxLines - 1] = clippedLines[maxLines - 1].slice(0, 14) + "...";
+        const limited = lines.slice(0, 3);
+        if (lines.length > 3) {{
+          limited[2] = limited[2].slice(0, Math.max(0, maxLength - 3)) + "...";
         }}
 
-        const lineHeight = 48;
-        const totalHeight = clippedLines.length * lineHeight;
-        const startY = size / 2 - totalHeight / 2 + 12;
-
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillStyle = "rgba(255,255,255,0.96)";
-        ctx.strokeStyle = "rgba(0,0,0,0.35)";
-        ctx.lineWidth = 8;
-        ctx.font = "bold 38px Arial";
-
-        clippedLines.forEach((txt, idx) => {{
-          const y = startY + idx * lineHeight;
-          ctx.strokeText(txt, size / 2, y);
-          ctx.fillText(txt, size / 2, y);
-        }});
-
-        const texture = new THREE.CanvasTexture(canvas);
-        texture.needsUpdate = true;
-
-        const material = new THREE.SpriteMaterial({{
-          map: texture,
-          transparent: true,
-          depthWrite: false
-        }});
-
-        const sprite = new THREE.Sprite(material);
-        const scale = Math.max(1.8, radius * 2.2);
-        sprite.scale.set(scale * 1.65, scale * 1.65, 1);
-        return sprite;
+        return limited.join("<br>");
       }}
 
       bubbles.forEach((b) => {{
@@ -436,12 +438,13 @@ html_code = f"""
         const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
         group.add(sphere);
 
-        const label = makeTextSprite(b.name, b.r);
-        label.position.set(0, 0, b.r * 1.02);
-        group.add(label);
-
         group.position.set(b.x, b.y, b.z);
         bubbleGroup.add(group);
+
+        const htmlLabel = document.createElement("div");
+        htmlLabel.className = "bubble-label";
+        htmlLabel.innerHTML = wrapLabelText(b.name, 16);
+        labelsLayer.appendChild(htmlLabel);
 
         bubbleMeshes.push({{
           group: group,
@@ -450,7 +453,8 @@ html_code = f"""
           baseZ: b.z,
           phase: b.phase,
           meta: b,
-          sphere: sphere
+          sphere: sphere,
+          htmlLabel: htmlLabel
         }});
 
         hoverTargets.push(sphere);
@@ -486,6 +490,37 @@ html_code = f"""
         tooltip.style.display = "none";
       }});
 
+      function updateLabels() {{
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+
+        bubbleMeshes.forEach((b) => {{
+          const projected = b.group.position.clone();
+          projected.project(camera);
+
+          const x = (projected.x * 0.5 + 0.5) * width;
+          const y = (-projected.y * 0.5 + 0.5) * height;
+
+          const inFront = projected.z < 1;
+          const inBounds = x >= -60 && x <= width + 60 && y >= -60 && y <= height + 60;
+          const visible = inFront && inBounds;
+
+          if (!visible) {{
+            b.htmlLabel.style.display = "none";
+            return;
+          }}
+
+          const depthOpacity = Math.max(0.45, Math.min(1.0, 1.15 - projected.z * 0.35));
+          const scale = Math.max(0.75, Math.min(1.15, 1.15 - projected.z * 0.12));
+
+          b.htmlLabel.style.display = "block";
+          b.htmlLabel.style.left = x + "px";
+          b.htmlLabel.style.top = y + "px";
+          b.htmlLabel.style.opacity = depthOpacity.toFixed(2);
+          b.htmlLabel.style.transform = "translate(-50%, -50%) scale(" + scale.toFixed(2) + ")";
+        }});
+      }}
+
       function animate() {{
         const t = clock.getElapsedTime() * SPEED;
 
@@ -503,6 +538,7 @@ html_code = f"""
         stars.rotation.y += 0.0007;
 
         controls.update();
+        updateLabels();
         renderer.render(scene, camera);
         requestAnimationFrame(animate);
       }}
@@ -513,11 +549,13 @@ html_code = f"""
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
+        updateLabels();
       }}
 
       window.addEventListener("resize", onResize);
 
       debugBox.textContent = "Escena 3D activa · " + bubbles.length + " empresas";
+      updateLabels();
       animate();
 
     }} catch (err) {{
